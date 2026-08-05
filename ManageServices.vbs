@@ -1,12 +1,8 @@
-' Enforce running in CSCRIPT so we don't get hundreds of MsgBox popups
-If InStr(LCase(WScript.FullName), "cscript.exe") = 0 Then
-    MsgBox "This script must be run from an elevated command prompt using cscript.exe." & vbCrLf & _
-           "Usage: cscript.exe ManageServices.vbs [delete_filter]", vbCritical, "CScript Required"
-    WScript.Quit
-End If
-
 Dim strFilter, strComputer, objWMIService, colServices, objService
 Dim errReturn
+
+' Mention admin requirement in the output
+WScript.Echo "Note: Deleting services requires this script to be run as an Administrator."
 
 ' Check for command line arguments
 If WScript.Arguments.Count > 0 Then
@@ -17,18 +13,18 @@ If WScript.Arguments.Count > 0 Then
     WScript.Sleep 5000 ' Give the user 5 seconds to abort
 Else
     strFilter = ""
-    WScript.Echo "No filter specified. Listing services only."
+    WScript.Echo "No filter specified. Listing all services..."
     WScript.Echo "----------------------------------------------------"
 End If
 
 strComputer = "."
-' Connect to WMI. (Requires Administrator privileges to delete services)
+' Connect to WMI
 Set objWMIService = GetObject("winmgmts:{impersonationLevel=impersonate}!\\" & strComputer & "\root\cimv2")
 Set colServices = objWMIService.ExecQuery("Select * from Win32_Service")
 
 For Each objService In colServices
     If strFilter = "" Then
-        ' No argument provided: Just list the services
+        ' No argument provided: Just list the services one by one as command output
         WScript.Echo "Name: " & objService.Name & " | Display Name: " & objService.DisplayName
     Else
         ' Argument provided: Look for matches in the Name or Display Name
@@ -49,7 +45,7 @@ For Each objService In colServices
             If errReturn = 0 Then
                 WScript.Echo "  -> SUCCESS: Service deleted."
             Else
-                WScript.Echo "  -> FAILED: Could not delete service. Error code: " & errReturn & " (Ensure you are running as Administrator)"
+                WScript.Echo "  -> FAILED: Could not delete service. Error code: " & errReturn
             End If
         End If
     End If
