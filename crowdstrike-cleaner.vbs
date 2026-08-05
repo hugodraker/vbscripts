@@ -148,10 +148,60 @@ For Each targetDir In fsPaths
     On Error GoTo 0
 Next
 
+' 7. REMOVE ORPHANED HARDWARE CLASS FILTERS (USB, KEYBOARD, MOUSE)
+Sub CleanClassFilter(guidKey, filterName)
+    Dim regPath, arrValues, i, newValues(), count, val, isModified
+    regPath = "SYSTEM\CurrentControlSet\Control\Class\" & guidKey
+    count = 0
+    isModified = False
+    
+    On Error Resume Next
+    objReg.GetMultiStringValue HKLM, regPath, filterName, arrValues
+    If IsArray(arrValues) Then
+        For i = 0 To UBound(arrValues)
+            val = LCase(Trim(arrValues(i)))
+            ' Filter out entries starting with "cs" or containing "crowdstrike"
+            If Left(val, 2) = "cs" Or InStr(1, val, "crowdstrike", 1) > 0 Then
+                isModified = True
+                WriteLog "SUCCESS: Removed orphaned filter '" & arrValues(i) & "' from " & guidKey & "\" & filterName
+            Else
+                ReDim Preserve newValues(count)
+                newValues(count) = arrValues(i)
+                count = count + 1
+            End If
+        Next
+        
+        If isModified Then
+            If count = 0 Then
+                objReg.DeleteValue HKLM, regPath, filterName
+                WriteLog "SUCCESS: Deleted empty " & filterName & " value in " & guidKey
+            Else
+                objReg.SetMultiStringValue HKLM, regPath, filterName, newValues
+                WriteLog "SUCCESS: Updated " & filterName & " in " & guidKey
+            End If
+        End If
+    End If
+    On Error GoTo 0
+End Sub
+
+WriteLog "Cleaning orphaned UpperFilters/LowerFilters from device class registries..."
+
+' USB Controllers & Hubs
+CleanClassFilter "{36FC9E60-C465-11CF-8056-444553540000}", "UpperFilters"
+CleanClassFilter "{36FC9E60-C465-11CF-8056-444553540000}", "LowerFilters"
+
+' Keyboards
+CleanClassFilter "{4D36E96B-E325-11CE-BFC1-08002BE10318}", "UpperFilters"
+CleanClassFilter "{4D36E96B-E325-11CE-BFC1-08002BE10318}", "LowerFilters"
+
+' Mice & Pointing Devices
+CleanClassFilter "{4D36E96F-E325-11CE-BFC1-08002BE10318}", "UpperFilters"
+CleanClassFilter "{4D36E96F-E325-11CE-BFC1-08002BE10318}", "LowerFilters"
+
 WriteLog "================================================="
 WriteLog "Deep clean finished! Log saved to: " & logFile
 WriteLog "================================================="
 
 MsgBox "CrowdStrike deep-clean completed!" & vbCrLf & vbCrLf & _
-       "All driver services, Add/Remove entries, and driver files have been purged." & vbCrLf & _
-       "Please reboot your system normally.", vbInformation, "Cleanup Complete"
+       "All driver services, Add/Remove entries, driver files, and orphaned hardware class filters have been purged." & vbCrLf & _
+       "Please reboot your system normally to restore USB functionality.", vbInformation, "Cleanup Complete"
