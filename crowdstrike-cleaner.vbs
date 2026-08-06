@@ -21,11 +21,13 @@ Set objReg = GetObject("winmgmts:\\.\root\default:StdRegProv")
 '===========================================================================
 msgText = "CROWDSTRIKE SAFE MODE DEEP-CLEAN SCRIPT" & vbCrLf & vbCrLf & _
           "This script will perform the following actions:" & vbCrLf & _
-          "  1. Force-disable and delete all CrowdStrike kernel services (CSFalconService, CSAgent, CSDeviceControl, CSKernel, etc.)." & vbCrLf & _
-          "  2. Thoroughly scan and remove ALL CrowdStrike right-click context menus (files, folders, drives, backgrounds, shortcuts)." & vbCrLf & _
-          "  3. Remove Add/Remove Programs (Uninstall) registry entries." & vbCrLf & _
-          "  4. Delete kernel driver files (.sys) from System32\drivers and wipe application directories." & vbCrLf & _
-          "  5. Clean orphaned UpperFilters and LowerFilters from USB, Keyboard, and Mouse device classes to fix Code 19/38/39 errors." & vbCrLf & vbCrLf & _
+          "  1. Make a Restore Point." & vbCrLf & _
+          "  2. Force-disable and delete all CrowdStrike kernel services (CSFalconService, CSAgent, CSDeviceControl, CSKernel, etc.)." & vbCrLf & _
+          "  3. Thoroughly scan and remove ALL CrowdStrike right-click context menus (files, folders, drives, backgrounds, shortcuts)." & vbCrLf & _
+          "  4. Remove Add/Remove Programs (Uninstall) registry entries." & vbCrLf & _
+          "  5. Delete kernel driver files (.sys) from System32\drivers and wipe application directories." & vbCrLf & _
+          "  6. Clean orphaned UpperFilters and LowerFilters from USB, Keyboard, and Mouse device classes to fix Code 19/38/39 errors." & vbCrLf & vbCrLf & _
+          "  7. If USB still doesn't work, use the power button to forcefully shutdown during boot 3 times to get to system restore, then restore the restore point made at the beginning, and the USB will work again after restart." & vbCrLf & _
           "WARNING: Run this script as Administrator (preferably in Safe Mode)." & vbCrLf & vbCrLf & _
           "Do you want to proceed with the cleanup?"
 
