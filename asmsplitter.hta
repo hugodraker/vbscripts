@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ASM File Splitter</title>
+    <hta:application
+        applicationname="ASMFileSplitter"
+        border="dialog"
+        caption="yes"
+        showintasksbar="no"
+        scroll="no"
+        singleinstance="yes"
+        sysmenu="yes"
+        windowstate="normal">
+    <style>
+        body {
+            font-family: Segoe UI, Arial, sans-serif;
+            padding: 24px;
+            margin: 0;
+            background: #f5f5f5;
+            overflow: hidden;
+        }
+        .container {
+            width: 560px;
+            background: white;
+            padding: 30px 36px 36px 36px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            font-size: 24px;
+            margin: 0 0 24px 0;
+            border-bottom: 2px solid #6d4aff;
+            padding-bottom: 10px;
+        }
+        label {
+            display: block;
+            margin-top: 18px;
+            color: #444;
+            font-weight: 600;
+        }
+        .file-row {
+            display: flex;
+            align-items: center;
+            margin-top: 5px;
+        }
+        .file-row input[type="text"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        input[type="number"] {
+            width: 100%;
+            padding: 10px;
+            margin-top: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        button#btnGo {
+            background: #6d4aff;
+            color: white;
+            border: none;
+            padding: 12px 36px;
+            margin-top: 26px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        button#btnGo:hover { background: #5a42e0; }
+        #status {
+            margin-top: 20px;
+            padding: 14px;
+            border-radius: 4px;
+            display: none;
+            font-size: 13px;
+            white-space: pre-wrap;
+        }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error   { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+    </style>
+    <script language="VBScript">
+        Option Explicit
+
+        Dim elFilePath, elChunks, elFileBrowse, elStatus, elContainer, reProc
+
+        Sub Window_onLoad()
+            Set elFilePath   = document.getElementById("txtFilePath")
+            Set elChunks     = document.getElementById("txtChunks")
+            Set elFileBrowse = document.getElementById("fileBrowse")
+            Set elStatus     = document.getElementById("status")
+            Set elContainer  = document.getElementById("container")
+
+            ' Matches standard MASM procedure definitions (e.g. "InitArrays PROC")
+            Set reProc = New RegExp
+            reProc.Pattern = "^\s*[a-zA-Z0-9_?@$]+\s+PROC\b"
+            reProc.IgnoreCase = True
+
+            elChunks.Value = "2"
+            setTimeout "DoResize", 50
+        End Sub
+
+        Sub PickFile()
+            elFileBrowse.Click
+        End Sub
+
+        Sub OnFileChange()
+            If elFileBrowse.Value <> "" Then
+                Dim fso, full
+                Set fso = CreateObject("Scripting.FileSystemObject")
+                full = fso.GetAbsolutePathName(elFileBrowse.Value)
+                elFilePath.Value = full
+            End If
+        End Sub
+
+        Sub DoResize()
+            Dim w, h
+            w = elContainer.offsetWidth  + 80
+            h = elContainer.offsetHeight + 80
+            If w < 480  Then w = 480
+            If h < 360  Then h = 360
+            window.resizeTo w, h
+            window.moveTo 200, 120
+        End Sub
+
+        ' =====================================================
+        '  MAIN SPLIT LOGIC FOR MASM (.ASM)
+        ' =====================================================
+        Sub GoSplit()
+            Dim fso, strPath, numChunks
+            Set fso = CreateObject("Scripting.FileSystemObject")
+            strPath = elFilePath.Value
+
+            If Not IsNumeric(elChunks.Value) Then
+                ShowStatus "Enter a valid number of chunks.", "error"
+                Exit Sub
+            End If
+            numChunks = CInt(elChunks.Value)
+
+            If strPath = "" Then
+                ShowStatus "Please select an ASM source file.", "error"
+                Exit Sub
+            End If
+            If Not fso.FileExists(strPath) Then
+                ShowStatus "File not found: " & strPath, "error"
+                Exit Sub
+            End If
+            If numChunks < 2 Then
+                ShowStatus "Minimum number of chunks is 2.", "error"
+                Exit Sub
+            End If
+
+            ' --- Read file ---
+            Dim ts, content
+            Set ts = fso.OpenTextFile(strPath, 1)
+            content = ts.ReadAll
+            ts.Close
+
+            Dim strDir
+            strDir = fso.GetParentFolderName(strPath)
+
+            ' --- Normalize Line Endings (Support CRLF, LF, CR) ---
+            content = Replace(content, vbCrLf, vbLf)
+            content = Replace(content, vbCr, vbLf)
+
+            Dim lines
+            lines = Split(content, vbLf)
+            Dim totalLines : totalLines = UBound(lines) + 1
+
+            ' -------------------------------------------------------
+            '  PASS 1: Strip comments/strings, build codeLines array
+            ' -------------------------------------------------------
+            Dim codeLines()
+            ReDim codeLines(totalLines - 1)
+            Dim i, stripped
+
+            For i = 0 To totalLines - 1
+                stripped = StripLineASM(lines(i))
+                codeLines(i) = stripped
+            Next
+
+            ' -------------------------------------------------------
+            '  PASS 2: Find procedure boundaries (PROC).
+            ' -------------------------------------------------------
+            Dim boundaryLines()
+            ReDim boundaryLines(totalLines)
+            Dim bCount : bCount = 0
+
+            ' First boundary is line 0 (captures headers, includes, .data section)
+            boundaryLines(0) = 0
+            bCount = 1
+
+            For i = 1 To totalLines - 1
+                If IsProcStart(codeLines(i)) Then
+                    boundaryLines(bCount) = i
+                    bCount = bCount + 1
+                End If
+            Next
+
+            ' -------------------------------------------------------
+            '  PASS 3: Choose split points and output files.
+            ' -------------------------------------------------------
+            Dim segsPerChunk, segRemainder
+            segsPerChunk = bCount \ numChunks
+            segRemainder = bCount Mod numChunks
+
+            Dim actualChunks
+            If segsPerChunk = 0 And segRemainder > 0 Then
+                actualChunks = bCount
+            Else
+                actualChunks = numChunks
+            End If
+
+            Dim segIdx : segIdx = 0
+            Dim cIdx
+
+            For cIdx = 1 To actualChunks
+                Dim numSegs : numSegs = segsPerChunk
+                If cIdx <= segRemainder Then numSegs = numSegs + 1
+
+                Dim beginLine, endLine
+                beginLine = boundaryLines(segIdx)
+
+                segIdx = segIdx + numSegs
+
+                If segIdx >= bCount Then
+                    endLine = totalLines - 1
+                Else
+                    endLine = boundaryLines(segIdx) - 1
+                End If
+
+                WriteChunk fso, strDir, cIdx, lines, beginLine, endLine
+            Next
+
+            Dim msgOut
+            msgOut = "Done!  Split into " & actualChunks & " file(s)." & vbCrLf & _
+                     "Found " & (bCount - 1) & " procedure(s), " & bCount & " segment(s)." & vbCrLf & _
+                     "Saved to: " & strDir
+            ShowStatus msgOut, "success"
+        End Sub
+
+        ' ---- Write a range of lines to <num>.asm ----
+        Sub WriteChunk(fso, strDir, chunkNum, lines, startLine, endLine)
+            Dim outPath, j, buf
+            outPath = strDir & "\" & chunkNum & ".asm"
+            buf = ""
+            For j = startLine To endLine
+                If j >= 0 And j <= UBound(lines) Then
+                    buf = buf & lines(j) & vbCrLf
+                End If
+            Next
+            Dim out
+            Set out = fso.CreateTextFile(outPath, True)
+            out.Write buf
+            out.Close
+        End Sub
+
+        ' =====================================================
+        '  StripLineASM: Safely strip assembly comments (;) and
+        '                string literal contents
+        ' =====================================================
+        Function StripLineASM(ByVal s)
+            Dim result, pos, quoteChar, ch
+            result = ""
+            pos = 1
+            quoteChar = ""
+
+            Do While pos <= Len(s)
+                ch = Mid(s, pos, 1)
+
+                If quoteChar <> "" Then
+                    If ch = quoteChar Then
+                        quoteChar = ""
+                    End If
+                    pos = pos + 1
+                Else
+                    If ch = ";" Then
+                        Exit Do
+                    ElseIf ch = """" Or ch = "'" Then
+                        quoteChar = ch
+                        pos = pos + 1
+                    Else
+                        result = result & ch
+                        pos = pos + 1
+                    End If
+                End If
+            Loop
+
+            StripLineASM = result
+        End Function
+
+        ' =====================================================
+        '  IsProcStart: Detects "FunctionName PROC" directives
+        ' =====================================================
+        Function IsProcStart(s)
+            IsProcStart = reProc.Test(s)
+        End Function
+
+        ' ---- Show status message ----
+        Sub ShowStatus(msg, kind)
+            elStatus.InnerHTML = msg
+            elStatus.ClassName = kind
+            elStatus.Style.display = "block"
+            setTimeout "DoResize", 50
+        End Sub
+    </script>
+</head>
+<body>
+    <div class="container" id="container">
+        <h1>ASM Source Code Splitter</h1>
+
+        <label>Input File:</label>
+        <div class="file-row">
+            <input type="text" id="txtFilePath" readonly>
+            <input type="file" id="fileBrowse"
+                   accept=".asm,.inc,.s"
+                   style="display:none;"
+                   onchange="OnFileChange()">
+        </div>
+        <button id="btnBrowse" onclick="PickFile()"
+                style="background:#444;color:#fff;border:none;padding:10px 18px;
+                       border-radius:4px;cursor:pointer;font-size:14px;margin-left:8px;">
+            Browse...
+        </button>
+
+        <label>Number of Chunks:</label>
+        <input type="number" id="txtChunks" min="2" value="2">
+
+        <button id="btnGo" onclick="GoSplit()">Go</button>
+
+        <div id="status"></div>
+    </div>
+</body>
+</html>
