@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SQL Database Maintenance & Repair Tool</title>
+    <hta:application id="oHTA"
+        applicationname="SQLRepair"
+        border="thin"
+        borderstyle="normal"
+        caption="yes"
+        contextmenu="yes"
+        icon=""
+        innerborder="no"
+        maximizebutton="yes"
+        minimizebutton="yes"
+        navigable="no"
+        scroll="no"
+        scrollflat="no"
+        selection="yes"
+        showintaskbar="yes"
+        singleinstance="yes"
+        sysmenu="yes"
+        version="1.2"
+        windowstate="normal">
+
+    <style>
+        body { font-family: "Segoe UI", Arial, sans-serif; background: #f4f4f4; padding: 20px; font-size: 14px; margin: 0; }
+        .container { background: #fff; padding: 20px; border-radius: 5px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .form-group { margin-bottom: 15px; }
+        .button-group { margin-top: 15px; padding-top: 15px; border-top: 1px solid #eee; }
+        label { font-weight: bold; display: inline-block; width: 120px; }
+        input[type=text], select { padding: 6px; font-size: 14px; width: 250px; border: 1px solid #ccc; border-radius: 3px; }
+        
+        button { padding: 7px 15px; font-size: 14px; cursor: pointer; color: white; border: none; border-radius: 3px; margin-right: 5px; margin-bottom: 5px;}
+        .primary-btn { background: #0078D7; }
+        .primary-btn:hover { background: #005A9E; }
+        
+        .action-btn { background: #5cb85c; }
+        .action-btn:hover { background: #4cae4c; }
+        
+        .mgmt-btn { background: #f0ad4e; color: #fff; }
+        .mgmt-btn:hover { background: #ec971f; }
+
+        .danger-btn { background: #d9534f; float: right; }
+        .danger-btn:hover { background: #c9302c; }
+        
+        /* Simulated Console Window */
+        #outputLog { 
+            background: #1e1e1e; 
+            color: #cccccc; 
+            font-family: Consolas, "Courier New", monospace; 
+            padding: 10px; 
+            height: 380px; 
+            overflow-y: scroll; 
+            margin-top: 15px; 
+            border-radius: 3px; 
+            border: 1px solid #000;
+            word-wrap: break-word;
+        }
+        
+        .success { color: #5cb85c; }
+        .error { color: #d9534f; }
+        .warn { color: #f0ad4e; }
+        .cmd { color: #5bc0de; }
+    </style>
+
+    <script language="VBScript">
+        Dim connStr
+        ' Dictionary to hold file paths so we can re-attach databases cleanly
+        Dim detachedPaths
+        Set detachedPaths = CreateObject("Scripting.Dictionary")
+
+        Sub Window_OnLoad
+            Window.ResizeTo 950, 750
+            LogMessage "Ready. Enter server name and click 'Load Databases'."
+        End Sub
+
+        ' Function to write to the embedded console window
+        Sub LogMessage(msg)
+            Dim logDiv
+            Set logDiv = document.getElementById("outputLog")
+            logDiv.innerHTML = logDiv.innerHTML & msg & "<br>"
+            logDiv.scrollTop = logDiv.scrollHeight
+        End Sub
+
+        ' Builds the connection string dynamically
+        Function GetConnectionString()
+            Dim srv
+            srv = document.getElementById("txtServer").value
+            GetConnectionString = "Provider=MSOLEDBSQL;Data Source=" & srv & ";Initial Catalog=master;Integrated Security=SSPI;"
+            
+            On Error Resume Next
+            Dim testConn
+            Set testConn = CreateObject("ADODB.Connection")
+            testConn.Open GetConnectionString
+            If Err.Number <> 0 Then
+                Err.Clear
+                GetConnectionString = "Provider=SQLOLEDB;Data Source=" & srv & ";Initial Catalog=master;Integrated Security=SSPI;"
+            Else
+                testConn.Close
+            End If
+            On Error GoTo 0
+        End Function
+
+        ' Loads databases into the dropdown
+        Sub LoadDBs()
+            On Error Resume Next
+            LogMessage "Connecting to server to fetch databases..."
+            
+            connStr = GetConnectionString()
+            
+            Dim conn, rs
+            Set conn = CreateObject("ADODB.Connection")
+            conn.ConnectionTimeout = 5
+            conn.Open connStr
+
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Error connecting: " & Err.Description & "</span>"
+                Err.Clear
+                Exit Sub
+            End If
+
+            Set rs = conn.Execute("SELECT name FROM sys.databases WHERE database_id > 4 AND state_desc = 'ONLINE' ORDER BY name")
+
+            Dim sel
+            Set sel = document.getElementById("dbList")
+            sel.options.length = 0
+
+            Do While Not rs.EOF
+                Dim opt
+                Set opt = document.createElement("OPTION")
+                opt.text = rs("name").Value
+                opt.value = rs("name").Value
+                sel.add opt
+                rs.MoveNext
+            Loop
+
+            rs.Close
+            conn.Close
+            LogMessage "<span class='success'>Databases loaded successfully.</span>"
+            On Error GoTo 0
+        End Sub
+
+        ' Routine for Detach operation
+        Sub RunDetach()
+            Dim sel, dbName
+            Set sel = document.getElementById("dbList")
+
+            If sel.selectedIndex < 0 Then
+                LogMessage "<span class='warn'>Please load and select a database first.</span>"
+                Exit Sub
+            End If
+
+            dbName = sel.options(sel.selectedIndex).value
+            LogMessage "<br><b>--- STARTING DETACH ON [" & dbName & "] ---</b>"
+
+            Dim conn, rs
+            Set conn = CreateObject("ADODB.Connection")
+            conn.CommandTimeout = 0 
+            
+            On Error Resume Next
+            conn.Open GetConnectionString()
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Failed to connect: " & Err.Description & "</span>"
+                Exit Sub
+            End If
+            On Error GoTo 0
+
+            ' Step 1: Capture file paths BEFORE detaching so we can attach them later
+            Dim paths, pathCount
+            paths = ""
+            pathCount = 0
+            
+            On Error Resume Next
+            Set rs = conn.Execute("SELECT physical_name FROM sys.master_files WHERE database_id = DB_ID('" & dbName & "')")
+            If Err.Number <> 0 Then
+                 LogMessage "<span class='error'>Error fetching file paths: " & Err.Description & "</span>"
+                 conn.Close
+                 Exit Sub
+            End If
+            Do While Not rs.EOF
+                paths = paths & rs("physical_name").Value & "|"
+                pathCount = pathCount + 1
+                rs.MoveNext
+            Loop
+            rs.Close
+            On Error GoTo 0
+
+            If pathCount = 0 Then
+                LogMessage "<span class='error'>Could not find file paths. Is the database already detached?</span>"
+                conn.Close
+                Exit Sub
+            End If
+            
+            ' Store paths in memory dictionary
+            If detachedPaths.Exists(dbName) Then
+                detachedPaths.Item(dbName) = paths
+            Else
+                detachedPaths.Add dbName, paths
+            End If
+            LogMessage "<span class='cmd'>Successfully cached " & pathCount & " file path(s) in memory for future Re-Attach.</span>"
+
+            ' Step 2: Drop active connections and Detach
+            ExecuteSQL conn, "ALTER DATABASE [" & dbName & "] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+            ExecuteSQL conn, "EXEC sp_detach_db '" & dbName & "'"
+
+            conn.Close
+            LogMessage "<b>--- DETACH FINISHED ---</b><br>"
+        End Sub
+
+        ' Routine for Attach operation
+        Sub RunAttach()
+            Dim sel, dbName
+            Set sel = document.getElementById("dbList")
+
+            If sel.selectedIndex < 0 Then
+                LogMessage "<span class='warn'>Please load and select a database first.</span>"
+                Exit Sub
+            End If
+
+            dbName = sel.options(sel.selectedIndex).value
+            LogMessage "<br><b>--- STARTING ATTACH ON [" & dbName & "] ---</b>"
+
+            ' Ensure we have the file paths in memory to execute the Attach
+            If Not detachedPaths.Exists(dbName) Then
+                LogMessage "<span class='error'>No file paths found in memory for [" & dbName & "]. Note: You can only Attach a database that was Detached during this current session of the tool.</span>"
+                Exit Sub
+            End If
+
+            Dim conn
+            Set conn = CreateObject("ADODB.Connection")
+            conn.CommandTimeout = 0 
+            
+            On Error Resume Next
+            conn.Open GetConnectionString()
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Failed to connect: " & Err.Description & "</span>"
+                Exit Sub
+            End If
+            On Error GoTo 0
+
+            ' Step 1: Rebuild the CREATE DATABASE FOR ATTACH command dynamically
+            Dim arr, i, attachSql, first
+            arr = Split(detachedPaths.Item(dbName), "|")
+            attachSql = "CREATE DATABASE [" & dbName & "] ON "
+            first = True
+            
+            For i = 0 To UBound(arr)
+                If arr(i) <> "" Then
+                    If Not first Then attachSql = attachSql & ", "
+                    ' Escape any potential single quotes in the filepath
+                    attachSql = attachSql & "(FILENAME = '" & Replace(arr(i), "'", "''") & "')"
+                    first = False
+                End If
+            Next
+            attachSql = attachSql & " FOR ATTACH"
+
+            ' Step 2: Execute Attach
+            ExecuteSQL conn, attachSql
+            ExecuteSQL conn, "ALTER DATABASE [" & dbName & "] SET MULTI_USER"
+
+            conn.Close
+            LogMessage "<b>--- ATTACH FINISHED ---</b><br>"
+        End Sub
+
+        ' Routine for Trim, Compact, and Reindex operations
+        Sub RunMaintenance(actionType)
+            Dim sel, dbName
+            Set sel = document.getElementById("dbList")
+
+            If sel.selectedIndex < 0 Then
+                LogMessage "<span class='warn'>Please load and select a database first.</span>"
+                Exit Sub
+            End If
+
+            dbName = sel.options(sel.selectedIndex).value
+
+            LogMessage "<br><b>--- STARTING " & actionType & " ON [" & dbName & "] ---</b>"
+            LogMessage "(This operation may take some time depending on database size...)"
+
+            Dim conn
+            Set conn = CreateObject("ADODB.Connection")
+            conn.CommandTimeout = 0 
+            
+            On Error Resume Next
+            conn.Open GetConnectionString()
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Failed to connect: " & Err.Description & "</span>"
+                Exit Sub
+            End If
+            On Error GoTo 0
+
+            Dim sqlQuery
+            If actionType = "TRIM" Then
+                sqlQuery = "DBCC SHRINKDATABASE ([" & dbName & "], TRUNCATEONLY)"
+            ElseIf actionType = "COMPACT" Then
+                sqlQuery = "DBCC SHRINKDATABASE ([" & dbName & "])"
+            ElseIf actionType = "REINDEX" Then
+                sqlQuery = "USE [" & dbName & "]; EXEC sp_MSforeachtable 'ALTER INDEX ALL ON ? REBUILD'"
+            End If
+
+            ExecuteSQL conn, sqlQuery
+
+            conn.Close
+            LogMessage "<b>--- " & actionType & " FINISHED ---</b><br>"
+        End Sub
+
+        ' Executes the Emergency Repair
+        Sub RunRepair()
+            Dim sel, dbName
+            Set sel = document.getElementById("dbList")
+
+            If sel.selectedIndex < 0 Then
+                LogMessage "<span class='warn'>Please load and select a database first.</span>"
+                Exit Sub
+            End If
+
+            dbName = sel.options(sel.selectedIndex).value
+
+            LogMessage "<br><b>--- STARTING REPAIR PROCESS FOR [" & dbName & "] ---</b>"
+            LogMessage "<span class='warn'>WARNING: REPAIR_ALLOW_DATA_LOSS was requested.</span>"
+
+            Dim conn
+            Set conn = CreateObject("ADODB.Connection")
+            conn.CommandTimeout = 0 
+            
+            On Error Resume Next
+            conn.Open GetConnectionString()
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Failed to connect: " & Err.Description & "</span>"
+                Exit Sub
+            End If
+            On Error GoTo 0
+
+            ExecuteSQL conn, "ALTER DATABASE [" & dbName & "] SET EMERGENCY"
+            ExecuteSQL conn, "ALTER DATABASE [" & dbName & "] SET SINGLE_USER WITH ROLLBACK IMMEDIATE"
+
+            LogMessage "<span class='cmd'>Running: DBCC CHECKDB ([" & dbName & "], REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS</span>"
+            LogMessage "(This may take a while. Please wait...)"
+            
+            On Error Resume Next
+            Dim rs
+            Set rs = conn.Execute("DBCC CHECKDB ([" & dbName & "], REPAIR_ALLOW_DATA_LOSS) WITH ALL_ERRORMSGS")
+            
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Error during DBCC CHECKDB: " & Err.Description & "</span>"
+                Err.Clear
+            Else
+                LogMessage "<span class='success'>DBCC CHECKDB completed. Reading output...</span>"
+                Do While Not (rs Is Nothing)
+                    If rs.State = 1 Then 
+                        Do While Not rs.EOF
+                            Dim msgText
+                            msgText = ""
+                            
+                            On Error Resume Next
+                            msgText = rs.Fields("MessageText").Value
+                            If Err.Number <> 0 Then
+                                Err.Clear
+                                msgText = rs.Fields(0).Value 
+                            End If
+                            On Error GoTo 0
+
+                            If Trim(msgText) <> "" Then
+                                LogMessage "&nbsp;&nbsp;>&nbsp;" & msgText
+                            End If
+                            rs.MoveNext
+                        Loop
+                    End If
+                    Set rs = rs.NextRecordset
+                Loop
+            End If
+            On Error GoTo 0
+
+            ExecuteSQL conn, "ALTER DATABASE [" & dbName & "] SET MULTI_USER"
+
+            conn.Close
+            LogMessage "<b>--- PROCESS FINISHED ---</b><br>"
+        End Sub
+
+        ' Helper to run standard SQL commands and log them
+        Sub ExecuteSQL(conn, sql)
+            On Error Resume Next
+            LogMessage "<span class='cmd'>Running: " & sql & "</span>"
+            conn.Execute sql
+            If Err.Number <> 0 Then
+                LogMessage "<span class='error'>Error: " & Err.Description & "</span>"
+                Err.Clear
+            Else
+                LogMessage "<span class='success'>Success.</span>"
+            End If
+            On Error GoTo 0
+        End Sub
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="form-group">
+            <label>Server Instance:</label>
+            <input type="text" id="txtServer" value=".\SQLEXPRESS">
+            <button class="primary-btn" onclick="LoadDBs()">Load Databases</button>
+        </div>
+        
+        <div class="form-group">
+            <label>Select Database:</label>
+            <select id="dbList"></select>
+        </div>
+
+        <div class="button-group">
+            <button class="action-btn" title="Shrinks DB files by returning free space to OS" onclick="RunMaintenance('TRIM')">Trim DB</button>
+            <button class="action-btn" title="Reorganizes pages then shrinks DB files" onclick="RunMaintenance('COMPACT')">Compact DB</button>
+            <button class="action-btn" title="Rebuilds all indexes on all tables" onclick="RunMaintenance('REINDEX')">Reindex DB</button>
+            
+            <button class="mgmt-btn" title="Detaches the database from the SQL instance" onclick="RunDetach()">Detach DB</button>
+            <button class="mgmt-btn" title="Re-attaches the database (Requires it to be detached in this session)" onclick="RunAttach()">Attach DB</button>
+            
+            <button class="danger-btn" title="Runs DBCC CHECKDB with Data Loss Allowance" onclick="RunRepair()">Run Emergency Repair</button>
+        </div>
+
+        <div id="outputLog"></div>
+    </div>
+</body>
+</html>
